@@ -101,8 +101,12 @@ def run_batch(dataset: Dataset, cfg: dict, n: int | None = None) -> dict:
     for i, request in enumerate(plan(n, cfg["eval"]["seed"]), 1):
         run = Run(id=f"batch{i:03d}", request=request, started_at="eval",
                   started=time.perf_counter())
+        before = {**state, "graph": state["graph"].copy()}   # update() grows the graph
         execute(run, lambda: state, cfg)
         rows.append(_row(run))
+        if run.status == "done" and run.result["detected"] and rows[-1]["is_crime"]:
+            rows[-1]["transactions_to_detect"] = transactions_to_detect(
+                before, scratch, cfg)
         if run.status == "done" and not run.result["detected"]:
             misses.extend(_miss_rows(run))
         if committed:
@@ -110,6 +114,34 @@ def run_batch(dataset: Dataset, cfg: dict, n: int | None = None) -> dict:
             committed.clear()
 
     return summarise(pd.DataFrame(rows), pd.DataFrame(misses), cfg)
+
+
+def transactions_to_detect(before: dict, scratch: Path, cfg: dict) -> int | None:
+    """The deterministic time-to-detect: how many of the injection's own
+    transactions, fed in timestamp order to the same incremental update the
+    endpoint runs, it takes before an injected entity is alerted on.
+
+    Wall-clock seconds depend on the machine's power state; this does not. The
+    endpoint folds a whole injection in as one batch, so "batches to detect" is
+    1 for every detection and says nothing — the prefix count is the useful
+    unit. Each prefix is scored from the state before the injection.
+    """
+    gt = json.loads((scratch / "ground_truth.json").read_text())
+    injection = gt["injections"][-1]
+    wallets = {w for c in injection["clusters"] for w in gt["clusters"][c]["wallets"]}
+    rows = pd.read_parquet(cfg["ingest"]["output_path"])
+    rows = rows[rows["txid"].isin(set(injection["txids"]))]
+    first_seen = rows.groupby("txid")["timestamp"].min().sort_values(kind="stable")
+    order = list(first_seen.index)
+    for k in range(1, len(order) + 1):
+        probe = {**before, "graph": before["graph"].copy()}
+        bundle = incremental.update(probe, rows[rows["txid"].isin(order[:k])]
+                                    .reset_index(drop=True), cfg, scratch)
+        cluster_of = bundle["features"].clustering.cluster_of
+        entities = {cluster_of(w) for w in wallets} - {None}
+        if bundle["alerts_frame"]["entity_id"].isin(entities).any():
+            return k
+    return None
 
 
 def _fresh_copy(dataset: Dataset, work: Path) -> Path:
@@ -136,6 +168,8 @@ def _row(run: Run) -> dict:
         "status": run.status,
         "detected": result.get("detected"),
         "time_to_detect": result.get("time_to_detect"),
+        "injected_transactions": result.get("transactions"),
+        "transactions_to_detect": None,
         "entities": result.get("entity_count"),
         "origin_rank": origin.get("best_rank"),
         "clustering_correct": (result.get("non_actor") or {}).get("clustering_correct"),
@@ -176,6 +210,7 @@ def summarise(runs: pd.DataFrame, misses: pd.DataFrame, cfg: dict) -> dict:
     for typology, group in done.groupby("typology"):
         detected = group[group["detected"]]
         times = [t for t in detected["time_to_detect"] if t is not None]
+        counts = [int(t) for t in detected["transactions_to_detect"] if pd.notna(t)]
         ranks = [r for r in group["origin_rank"] if r is not None and not pd.isna(r)]
         per_typology.append({
             "typology": typology,
@@ -183,7 +218,9 @@ def summarise(runs: pd.DataFrame, misses: pd.DataFrame, cfg: dict) -> dict:
             "runs": len(group),
             "detected": int(group["detected"].sum()),
             "detection rate": round(float(group["detected"].mean()), 3),
-            "median time-to-detect (s)": round(statistics.median(times), 2) if times else None,
+            "median transactions to detect": statistics.median(counts) if counts else None,
+            "median injected transactions": (statistics.median(detected["injected_transactions"])
+                                             if len(detected) else None),
             "origin named (rank 1)": int(sum(1 for r in ranks if r == 1)),
             "true origin in candidates": len(ranks),
         })
@@ -200,6 +237,11 @@ def summarise(runs: pd.DataFrame, misses: pd.DataFrame, cfg: dict) -> dict:
         })
 
     times = [t for t in crimes[crimes["detected"]]["time_to_detect"] if t is not None]
+    counts = [int(t) for t in crimes[crimes["detected"]]["transactions_to_detect"]
+              if pd.notna(t)]
+    fractions = [int(r.transactions_to_detect) / r.injected_transactions
+                 for r in crimes[crimes["detected"]].itertuples()
+                 if pd.notna(r.transactions_to_detect) and r.injected_transactions]
     return {
         "runs": len(runs),
         "completed": len(done),
@@ -209,6 +251,9 @@ def summarise(runs: pd.DataFrame, misses: pd.DataFrame, cfg: dict) -> dict:
         "crime_detected": int(crimes["detected"].sum()) if len(crimes) else 0,
         "detection_rate": round(float(crimes["detected"].mean()), 3) if len(crimes) else None,
         "median_time_to_detect": round(statistics.median(times), 2) if times else None,
+        # Headline: deterministic, in the pattern's own transactions.
+        "median_transactions_to_detect": statistics.median(counts) if counts else None,
+        "median_fraction_to_detect": round(statistics.median(fractions), 3) if fractions else None,
         # Kept visible so the exclusion cannot look like something being hidden.
         "all_runs_detected": int(done["detected"].sum()) if len(done) else 0,
         "all_runs_rate": round(float(done["detected"].mean()), 3) if len(done) else None,

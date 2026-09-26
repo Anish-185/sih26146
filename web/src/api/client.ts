@@ -4,6 +4,8 @@
  *  VITE_API_BASE defaults to same-origin, which is what FastAPI serving
  *  web/dist gives us; the dev server proxies instead (see vite.config.ts). */
 import type {
+  ActorDetail,
+  ActorsPage,
   AlertsPage,
   AsnProfile,
   EntityDetail,
@@ -82,6 +84,11 @@ export const api = {
   asnProfile: (asn: string, signal?: AbortSignal) =>
     get<AsnProfile>(`/asns/${encodeURIComponent(asn)}/profile`, signal),
 
+  actors: (signal?: AbortSignal) => get<ActorsPage>("/actors?limit=200", signal),
+  /** Every call is recorded in the custody ledger by the server. */
+  actor: (id: string, signal?: AbortSignal) =>
+    get<ActorDetail>(`/actors/${encodeURIComponent(id)}`, signal),
+
   reportUrl: (id: string) => `${API_BASE}/entities/${encodeURIComponent(id)}/report`,
 
   async feedback(alertId: string, status: "confirmed" | "false_positive") {
@@ -95,5 +102,15 @@ export const api = {
     );
     if (!response.ok) throw new ApiError(await detail(response), response.status);
     return (await response.json()) as { alert_id: string; status: string; recorded: number };
+  },
+
+  async actorVerdict(actorId: string, status: "confirmed" | "false_positive") {
+    const response = await fetch(`${API_BASE}/actors/${encodeURIComponent(actorId)}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) throw new ApiError(await detail(response), response.status);
+    return (await response.json()) as { actor_id: string; status: string; recorded: number };
   },
 };

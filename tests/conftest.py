@@ -76,7 +76,7 @@ def isolate_stacker_model(tmp_path_factory):
 #: starts; tests/test_zz_artifacts.py checks them again at the end.
 ARTIFACTS = [
     ("custody", "ledger_path"), ("fusion", "model_path"), ("fusion", "alerts_json"),
-    ("fusion", "alerts_parquet"), ("fusion", "feedback_parquet"),
+    ("fusion", "alerts_parquet"), ("fusion", "feedback_parquet"), ("fusion", "actors_json"),
     ("ingest", "output_path"), ("ingest", "quarantine_path"),
     ("features", "relay_path"), ("origination", "model_path"),
     ("engines", "correlation"),

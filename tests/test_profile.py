@@ -407,3 +407,23 @@ def test_the_demo_capture_shares_the_served_datasets_txids(world, tmp_path):
         per_tx.setdefault(e.txid, set()).add(e.peer_ip)
     senders = hops.groupby("txid")["src_ip"].nunique()
     assert all(len(per_tx[t]) == n for t, n in senders.items())
+
+
+def test_every_actor_link_traces_to_raw_evidence_and_skips_the_coinjoin(world):
+    """docs/ACTORS.md: each link carries the raw rows it rests on, and the
+    CoinJoin the peer is QUALIFIED origin of joins no participant's cluster."""
+    from fusion import actors as A
+    links = A.peer_links(world["src"], CFG)
+    assert links
+    for lk in links:
+        assert lk["evidence_total"] >= 1 and lk["evidence"]
+        assert all(e["rows"] for e in lk["evidence"]), (lk["peer"], lk["cluster_id"])
+        assert all(e["txid"] != world["mix"] for e in lk["evidence"]
+                   if e["basis"] == "origination")
+    mix_clusters = {world["src"].features.entity_of(a)
+                    for a, _ in world["src"].txs[world["mix"]].inputs}
+    joined_via_mix = [lk for lk in links if lk["cluster_id"] in mix_clusters and A.may_join(lk)
+                      and all(e["txid"] == world["mix"] for e in lk["evidence"])]
+    assert not joined_via_mix
+    assert any(lk["peer_kind"] == "onion identity" and lk["ip_class"] is None for lk in links) \
+        or not any(P.is_onion(lk["peer"]) for lk in links)

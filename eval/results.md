@@ -25,7 +25,7 @@ before any of this was measured. Wallet recall is reported as secondary.
 | cluster ARI | 0.2126 | 0.2316 | our wallet partition vs the generator's | 2348 / 2931 wallets |
 | red-team detection rate, crimes only | — | 0.667 | criminal injection raised at least one alert (section 7) | 30 injections, shifted set |
 | red-team detection rate, all typologies | — | 0.400 | includes the two patterns that are not crimes — see section 7 | 50 injections |
-| red-team median time-to-detect | — | 1.95s | inject to alert, incremental re-run, crimes only | 20 detected |
+| red-team median transactions to detect | — | 11.5 | the pattern's own transactions, in time order, before the first alert on it; crimes only; deterministic (wall-clock: section 7 footnote) | 20 detected |
 | attribution leads naming the true IP | 0.526 | 0.613 | leads shown beside an alert (not an AUC — see section 6) | 38 / 62 leads |
 
 
@@ -901,7 +901,7 @@ so this measures a system whose dataset is growing under it, which is the
 condition the demo runs in.
 
 
-**20 of 30 criminal injections were detected — 0.667** at threshold 0.5, median time-to-detect 1.95s.
+**20 of 30 criminal injections were detected — 0.667** at threshold 0.5. **Median transactions to detect: 11.5** of the pattern's own transactions (median share of the injection: 0.824), fed in timestamp order to the same incremental update the endpoint runs. A count, so it does not depend on the machine; wall-clock is a footnote below.
 
 
 Over **all 50** injections including the two non-crime patterns the figure is 20 detected, 0.400 — shown so the exclusion below cannot be mistaken for
@@ -925,13 +925,13 @@ a legal privacy tool.
 **Per typology:**
 
 
-| typology | is a crime | runs | detected | detection rate | median time-to-detect (s) | origin named (rank 1) | true origin in candidates |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| coinjoin | no — not an actor | 10 | 0 | 0.000 | n/a | 3 | 4 |
-| layering | yes | 10 | 4 | 0.400 | 1.960 | 5 | 5 |
-| peel_chain | yes | 10 | 7 | 0.700 | 1.940 | 5 | 5 |
-| ransomware_collector | yes | 10 | 9 | 0.900 | 1.960 | 5 | 5 |
-| same_actor_cluster | no — not an actor | 10 | 0 | 0.000 | n/a | 5 | 5 |
+| typology | is a crime | runs | detected | detection rate | median transactions to detect | median injected transactions | origin named (rank 1) | true origin in candidates |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| coinjoin | no — not an actor | 10 | 0 | 0.000 | n/a | n/a | 3 | 4 |
+| layering | yes | 10 | 4 | 0.400 | 12.500 | 12.500 | 5 | 5 |
+| peel_chain | yes | 10 | 7 | 0.700 | 5.000 | 8.000 | 5 | 5 |
+| ransomware_collector | yes | 10 | 9 | 0.900 | 18.000 | 22.000 | 5 | 5 |
+| same_actor_cluster | no — not an actor | 10 | 0 | 0.000 | n/a | n/a | 5 | 5 |
 
 
 **By broadcast route** — what the network side could recover:
@@ -943,6 +943,16 @@ a legal privacy tool.
 | relay_heavy | 10 | 0.400 | 1.000 | 1.000 |
 | residential | 15 | 0.333 | 0.933 | 0.867 |
 | tor_exit | 15 | 0.467 | 0.000 | 0.000 |
+
+
+*Footnote — wall-clock.* Measured once on 2026-09-26 on the development laptop,
+`eval.redteam_batch.run_batch` on the shifted dataset, a discarded warm-up batch
+first: median inject-to-alert **2.41 s** in the warm-up (on AC power throughout)
+and **2.52 s** in the measured batch, over the 20 detected criminal injections. The
+AC adapter read offline when the measured batch finished, so it is not a clean
+on-AC figure; treat both as indicative. The transaction count above was identical
+in both batches (median 11.5), which is why it is the headline. Copied through, not
+regenerated.
 
 
 ### The two patterns that are not crimes
@@ -1858,7 +1868,86 @@ linked hop to hop), which is why P8.1 replaced it. Same seed, same model.
 | legacy_naive | 1 | 3 | 748 | 55 | 0 | 24 |
 
 
-## 13. Decisions taken in this pass
+## 13. Actors: the queue as triage
+
+
+### The served demo dataset is shifted from the corpora
+
+The origination model on the served demo capture (a pooled collector over the relay-hop log), scored as the corpus rows in section 9 are. Its cross-topology corpus row: top1 0.274, abstention 0.808, accuracy if answered 0.906, cost 0.120, ceiling 0.279. The demo's ceiling is far higher because a pooled collector sees the origin far more often, so the absolute numbers are not comparable; relative to its ceiling, top1 is 0.94 here and 0.98 on the corpus. Origination does not degrade on the demo, so the generators were not aligned for it.
+
+| n | top1 | abstention rate | acc if answered | ceiling (origin observed) | cost_weighted_score |
+| --- | --- | --- | --- | --- | --- |
+| 1247 | 0.747 | 0.604 | 0.943 | 0.797 | 0.255 |
+
+
+What the fingerprint novelty check trips on in the demo, by the tell that was least supported under the named pattern:
+
+| transaction | worst tell | flagged |
+| --- | --- | --- |
+| ordinary payment | script_mix | 301 |
+| typology | io_shape | 195 |
+| typology | script_mix | 36 |
+| ordinary payment | fee | 23 |
+| ordinary payment | sequence | 7 |
+| typology | fee | 1 |
+| ordinary payment | io_shape | 1 |
+
+`script_mix`: `generator.main` gives each actor a script type from `generator.script_types`, independent of its wallet profile, while the corpus draws input types from the profile's `input_types`. `io_shape`: the typologies build 1-in-1-out and wide fan-out transactions the corpus's three shapes (payment, batch, CoinJoin) never contain. Both are generator differences, not model faults, and only the fingerprint depends on them.
+
+### Actor queue vs entity queue
+
+`condition="simulated"`, cross-topology: the generator's gossip network (relay_hub, 500 nodes, relay share 0.08) is not among the origination corpus's training configurations. Both queues come from one fusion bundle and one fitted stacker per dataset; the only difference is the unit (docs/ACTORS.md). An item *finds* an illicit operation (`eval.actors.actors_of`) when it holds any of its wallets. The join rule was fixed before this evaluation was run.
+
+#### standard
+
+| queue | items | precision@10 | recall@10 | precision@25 | recall@25 | precision@50 | recall@50 | reviewed to find 1 | reviewed to find 3 | reviewed to find all |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| entity queue (before) | 197 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 3 | 6 |
+| actor queue | 189 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 3 | 6 |
+
+| measure | value |
+| --- | --- |
+| entity alerts | 197 |
+| actor alerts | 189 |
+| alert count reduction | 0.041 |
+| illicit operations present | 5 |
+| actor purity (alerted, mean) | 1.0 |
+| entity purity (alerted, mean) | 1.0 |
+| alerted actors joining 2+ clusters | 4 |
+| wrong-merge rate (alerted multi-cluster actors) | 0.0 |
+| actors joining 2+ clusters (all) | 78 |
+| wrong-merge rate (all multi-cluster actors) | 0.064 |
+| links | 862 |
+| joining links | 313 |
+
+
+#### shifted
+
+| queue | items | precision@10 | recall@10 | precision@25 | recall@25 | precision@50 | recall@50 | reviewed to find 1 | reviewed to find 3 | reviewed to find all |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| entity queue (before) | 470 | 1.000 | 0.750 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 4 | 12 |
+| actor queue | 451 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 3 | 10 |
+
+| measure | value |
+| --- | --- |
+| entity alerts | 470 |
+| actor alerts | 451 |
+| alert count reduction | 0.04 |
+| illicit operations present | 4 |
+| actor purity (alerted, mean) | 0.999 |
+| entity purity (alerted, mean) | 1.0 |
+| alerted actors joining 2+ clusters | 5 |
+| wrong-merge rate (alerted multi-cluster actors) | 0.2 |
+| actors joining 2+ clusters (all) | 69 |
+| wrong-merge rate (all multi-cluster actors) | 0.087 |
+| links | 865 |
+| joining links | 302 |
+
+
+**Verdict, plainly.** standard: precision/recall@k does not improve, workload does not drop; shifted: precision/recall@k improves somewhere, workload drops somewhere. These datasets hold only 5 and 4 illicit operations, and nearly every alert already holds an illicit wallet, so precision@k saturates for both queues and small differences are within one operation. What the actor queue changes is mostly the count: 4.1% and 4.0% fewer items, at the wrong-merge rates above. It is not shown to improve triage beyond that on this data.
+
+
+## 14. Decisions taken in this pass
 
 **The unit of detection is the actor.** Pre-registered in
 `docs/detection_unit_protocol.md` before the label was built or the stacker

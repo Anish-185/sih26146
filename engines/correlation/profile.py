@@ -382,7 +382,9 @@ def _linked_clusters(peer: str, claims: list, src: Sources, cfg: dict,
             entry["origination"].append(claim["probability"])
             entry["evidence"].append({"basis": "origination", "txid": claim["txid"],
                                       "probability": claim["probability"],
-                                      "tier": claim["tier"], "rows": rows,
+                                      "tier": claim["tier"],
+                                      "reasons": list(claim["validity"]["reasons"]),
+                                      "rows": rows,
                                       "inputs": sorted(set(addrs))})
 
     # Correlation leads: the forward engine's (cluster, IP) associations.

@@ -405,3 +405,25 @@ def test_no_tor_onion_answer_exposes_an_ip(client, tmp_path):
         except ValueError:
             continue
         raise AssertionError(f"an onion answer carries an IP: {answer}")
+
+
+# --- actors ----------------------------------------------------------------
+def test_actors_are_served_and_every_view_and_verdict_is_in_the_ledger(client):
+    import custody
+    c, d = client
+    body = c.get("/actors", params={"alerted_only": "false"}).json()
+    assert body["total"] >= 1 and "does not name or imply a person" in body["statement"]
+    first = body["actors"][0]
+    assert first["name"] == f"actor {first['actor_id']}"
+    detail = c.get(f"/actors/{first['actor_id']}").json()
+    assert set(detail["drill_down"]["entities"]) == set(first["members"])
+    assert all(v.startswith("/entities/") for v in detail["drill_down"]["entities"].values())
+    views = [e for e in custody.read() if e["action"] == "actor.view"]
+    assert views[-1]["detail"]["subject"] == first["actor_id"] and views[-1]["detail"]["found"]
+    assert c.get("/actors/A-999999").status_code == 404
+    assert custody.read()[-1]["detail"] == {**custody.read()[-1]["detail"], "found": False}
+    verdict = c.post(f"/actors/{first['actor_id']}/verdict", json={"status": "confirmed"}).json()
+    assert verdict["recorded"] == 1
+    last = custody.read()[-1]
+    assert last["action"] == "actor.verdict" and last["detail"]["actor_id"] == first["actor_id"]
+    assert (d / "actor_feedback.parquet").exists() and not (d / "feedback.parquet").exists()

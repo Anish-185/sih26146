@@ -7,6 +7,7 @@ import { Entity } from "./pages/Entity";
 import { Transaction } from "./pages/Transaction";
 import { RedTeam } from "./pages/RedTeam";
 import { Monitor } from "./pages/Monitor";
+import { Actor } from "./pages/Actor";
 import { Custody } from "./pages/Custody";
 import { Asn, Peer, Peers } from "./pages/Peer";
 
@@ -23,6 +24,7 @@ export function App() {
         <Route path="/" element={<Home />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/entities/:id" element={<Entity />} />
+        <Route path="/actors/:id" element={<Actor />} />
         <Route path="/tx/:txid" element={<Transaction />} />
         <Route path="/peers" element={<Peers />} />
         <Route path="/peers/:peer" element={<Peer />} />

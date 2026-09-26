@@ -366,3 +366,48 @@ export interface TxFingerprint extends FingerprintAnswer {
   /** config features.fingerprint.console_display: show by default or not. */
   console_display?: boolean;
 }
+
+/** fusion/actors.py — clusters joined to peer identities by evidence. A name
+ *  like "actor A-17" is a handle; it never implies a person or organisation. */
+export interface ActorLink {
+  peer: string;
+  peer_kind: "IP" | "onion identity";
+  ip_class: string | null;
+  cluster_id: string;
+  basis: "origination" | "correlation lead" | "both";
+  confidence: number;
+  origin_tiers: string[];
+  evidence_total: number;
+  evidence_chain: string;
+  evidence: { basis: string; txid: string; probability: number; tier?: string }[];
+  /** Whether this link may merge clusters into one actor (docs/ACTORS.md). */
+  joins: boolean;
+}
+
+export interface Actor {
+  actor_id: string;
+  name: string;
+  risk_score: number;
+  membership_confidence: number;
+  confidence_basis: string;
+  members: string[];
+  peers: string[];
+  anchor: string;
+  member_detail: { entity_id: string; entity_risk: number; weight: number; alerted: boolean }[];
+  links: ActorLink[];
+  origin_tiers: string[];
+  alerted: boolean;
+  statement: string;
+}
+
+export interface ActorsPage {
+  alert_threshold: number | null;
+  statement: string | null;
+  total: number;
+  actors: Actor[];
+}
+
+export interface ActorDetail extends Actor {
+  drill_down: { entities: Record<string, string>; peers: Record<string, string>; transactions: string[] };
+  custody: { seq: number | null };
+}

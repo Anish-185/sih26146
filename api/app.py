@@ -724,6 +724,82 @@ def peer_profile(peer: str) -> dict:
     return {**profile, "custody": {"seq": entry.get("seq")}}
 
 
+# --- actors ---------------------------------------------------------------
+def _actors() -> dict:
+    """fusion/actors.py's output, written beside the alerts it was built with."""
+    from fusion.pipeline import actors_path_for
+    cfg = config.load()
+    path = actors_path_for(Path(STATE["alerts_json"] or cfg["fusion"]["alerts_json"]), cfg)
+    return json.loads(path.read_text()) if path.exists() else {"actors": []}
+
+
+def _actor(actor_id: str) -> dict | None:
+    return next((a for a in _actors()["actors"] if a["actor_id"] == actor_id), None)
+
+
+def _drill_down(actor: dict) -> dict:
+    """Where each part of an actor is evidenced, in the views that already exist."""
+    return {"entities": {m: f"/entities/{m}" for m in actor["members"]},
+            "peers": {p: f"/peers/{p}/profile" for p in actor["peers"]},
+            "transactions": sorted({e["txid"] for lk in actor["links"]
+                                    for e in lk["evidence"]})}
+
+
+@app.get("/actors")
+def actors_queue(limit: int | None = None, offset: int = Query(0, ge=0),
+                 alerted_only: bool = True) -> dict:
+    """The actor queue: clusters joined to peer identities (docs/ACTORS.md),
+    highest risk first. `alerted_only=false` lists every actor."""
+    cfg = config.load()
+    size = min(limit or cfg["api"]["page_size"], cfg["api"]["max_page_size"])
+    payload = _actors()
+    rows = [a for a in payload["actors"] if a["alerted"] or not alerted_only]
+    return {"alert_threshold": payload.get("alert_threshold"),
+            "statement": payload.get("statement"), "total": len(rows),
+            "limit": size, "offset": offset, "actors": rows[offset:offset + size]}
+
+
+@app.get("/actors/{actor_id}")
+def actor_detail(actor_id: str) -> dict:
+    """One actor with its members, linked peers (basis, confidence, validity
+    tiers) and drill-down to the per-entity, per-peer and per-transaction views.
+    Every view is recorded in the custody ledger, found or not."""
+    actor = _actor(actor_id)
+    entry = custody.record("actor.view", {"subject": actor_id, "found": actor is not None,
+                                          "files": _evidence_seal()["files"]})
+    if actor is None:
+        raise HTTPException(404, f"unknown actor {actor_id}")
+    return {**actor, "drill_down": _drill_down(actor), "custody": {"seq": entry.get("seq")}}
+
+
+@app.post("/actors/{actor_id}/verdict")
+def actor_verdict(actor_id: str, body: Feedback) -> dict:
+    """An analyst's verdict on an actor, appended beside the entity feedback
+    (never into it: the stacker trains on entity verdicts) and recorded in the
+    custody ledger."""
+    if body.status not in ("confirmed", "false_positive"):
+        raise HTTPException(422, "status must be 'confirmed' or 'false_positive'")
+    actor = _actor(actor_id)
+    if actor is None:
+        raise HTTPException(404, f"unknown actor {actor_id}")
+    entity_feedback = Path(STATE["feedback"] or config.get("fusion.feedback_parquet"))
+    path = entity_feedback.with_name("actor_feedback.parquet")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = pd.DataFrame([{"actor_id": actor_id, "members": json.dumps(actor["members"]),
+                         "peers": json.dumps(actor["peers"]), "status": body.status,
+                         "risk_score": float(actor["risk_score"]),
+                         "recorded_at": pd.Timestamp.now(tz="UTC")}])
+    if path.exists():
+        row = pd.concat([pd.read_parquet(path), row], ignore_index=True)
+    row.to_parquet(path, index=False)
+    entry = custody.record("actor.verdict", {
+        "files": [custody.seal(path)], "actor_id": actor_id, "status": body.status,
+        "members": actor["members"], "peers": actor["peers"],
+        "risk_score": float(actor["risk_score"])})
+    return {"actor_id": actor_id, "status": body.status, "recorded": len(row),
+            "custody": {"seq": entry.get("seq")}}
+
+
 @app.get("/asns/{asn}/profile")
 def asn_profile(asn: str) -> dict:
     """Every peer seen in an ASN, aggregated, with the per-peer breakdown."""

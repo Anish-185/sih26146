@@ -190,9 +190,10 @@ def summary_table(fusion: dict, origin_rows: dict, cfg: dict, extra: dict) -> pd
          fmt(extra["redteam"]["all_runs_rate"]),
          "includes the two patterns that are not crimes — see section 7",
          f"{extra['redteam']['completed']} injections"),
-        ("red-team median time-to-detect", "—",
-         f"{extra['redteam']['median_time_to_detect']}s",
-         "inject to alert, incremental re-run, crimes only",
+        ("red-team median transactions to detect", "—",
+         f"{extra['redteam']['median_transactions_to_detect']}",
+         ("the pattern's own transactions, in time order, before the first alert on it; "
+         "crimes only; deterministic (wall-clock: section 7 footnote)"),
          f"{extra['redteam']['crime_detected']} detected"),
         ("attribution leads naming the true IP",
          fmt(extra["leads"]["standard"]), fmt(extra["leads"]["shifted"]),
@@ -553,8 +554,11 @@ def build_report(cfg: dict, rebuild: bool = False) -> str:
     add(REDTEAM_PREAMBLE)
     add(f"\n**{redteam['crime_detected']} of {redteam['crime_runs']} criminal "
         f"injections were detected — {redteam['detection_rate']:.3f}** at threshold "
-        f"{redteam['threshold']}, median time-to-detect "
-        f"{redteam['median_time_to_detect']}s."
+        f"{redteam['threshold']}. **Median transactions to detect: "
+        f"{redteam['median_transactions_to_detect']}** of the pattern's own transactions "
+        f"(median share of the injection: {redteam['median_fraction_to_detect']}), fed "
+        "in timestamp order to the same incremental update the endpoint runs. A count, "
+        "so it does not depend on the machine; wall-clock is a footnote below."
         + (f" {redteam['failed']} run(s) failed outright.\n" if redteam["failed"]
            else "\n"))
     add(f"\nOver **all {redteam['completed']}** injections including the two "
@@ -566,6 +570,7 @@ def build_report(cfg: dict, rebuild: bool = False) -> str:
     add(md_table(redteam["per_typology"]))
     add("\n**By broadcast route** — what the network side could recover:\n\n")
     add(md_table(redteam["by_broadcast"]))
+    add(REDTEAM_WALLCLOCK)
 
     add("\n### The two patterns that are not crimes\n")
     add("Scored as what they are. There is nothing to catch, so \"detection rate\" is "
@@ -631,8 +636,138 @@ def build_report(cfg: dict, rebuild: bool = False) -> str:
     add("\n## 12. Wallet-construction fingerprints\n")
     add(fingerprint_section(cfg, rebuild))
 
+    # --- 13. actors ------------------------------------------------------------
+    add("\n## 13. Actors: the queue as triage\n")
+    add(actor_section({"standard": standard[default_rate], "shifted": shifted[default_rate]},
+                      {n: fusion[n]["stacker"] for n in ("standard", "shifted")}, cfg))
+
     add(CLOSING)
     return "\n".join(parts)
+
+
+#: Wall-clock time-to-detect, measured once, by hand, not regenerated: seconds
+#: depend on the machine's power state and load (docs/VALIDITY.md, red-team
+#: timing), so the headline above is a transaction count instead.
+REDTEAM_WALLCLOCK = """
+*Footnote — wall-clock.* Measured once on 2026-09-26 on the development laptop,
+`eval.redteam_batch.run_batch` on the shifted dataset, a discarded warm-up batch
+first: median inject-to-alert **2.41 s** in the warm-up (on AC power throughout)
+and **2.52 s** in the measured batch, over the 20 detected criminal injections. The
+AC adapter read offline when the measured batch finished, so it is not a clean
+on-AC figure; treat both as indicative. The transaction count above was identical
+in both batches (median 11.5), which is why it is the headline. Copied through, not
+regenerated.
+"""
+
+def actor_section(datasets: dict, stackers: dict, cfg: dict) -> str:
+    """Section 13: the served demo's distribution shift, then the actor queue
+    against the entity queue on each dataset (eval/actor_queue.py)."""
+    from eval import actor_queue
+    out = [demo_shift_section(cfg)]
+    results = actor_queue.evaluate(datasets, stackers, cfg)
+    out.append(
+        "\n### Actor queue vs entity queue\n\n"
+        "`condition=\"simulated\"`, cross-topology: the generator's gossip network "
+        "(relay_hub, 500 nodes, relay share 0.08) is not among the origination corpus's "
+        "training configurations. Both queues come from one fusion bundle and one fitted "
+        "stacker per dataset; the only difference is the unit (docs/ACTORS.md). An item "
+        "*finds* an illicit operation (`eval.actors.actors_of`) when it holds any of its "
+        "wallets. The join rule was fixed before this evaluation was run.\n")
+    for name, r in results.items():
+        q = r["quality"]
+        out += [f"\n#### {name}\n\n", md_table(r["table"]), "\n",
+                md_table(pd.DataFrame([{"measure": k, "value": str(v)} for k, v in q.items()])),
+                "\n"]
+    std, shf = results["standard"]["table"], results["shifted"]["table"]
+
+    def better(t):
+        before, after = t.iloc[0], t.iloc[1]
+        cols = [c for c in t.columns if c.startswith(("precision@", "recall@"))]
+        gain = any((after[c] or 0) > (before[c] or 0) for c in cols)
+        work = [c for c in t.columns if c.startswith("reviewed to find")]
+        counted = lambda v: not isinstance(v, str) and pd.notna(v)
+        less = any(counted(after[c]) and counted(before[c]) and after[c] < before[c]
+                   for c in work)
+        return gain, less
+    verdicts = {n: better(t) for n, t in (("standard", std), ("shifted", shf))}
+    lines = []
+    for n, (gain, less) in verdicts.items():
+        lines.append(f"{n}: precision/recall@k {'improves somewhere' if gain else 'does not improve'}, "
+                     f"workload {'drops somewhere' if less else 'does not drop'}")
+    out.append("\n**Verdict, plainly.** " + "; ".join(lines) + ". These datasets hold only "
+               f"{results['standard']['quality']['illicit operations present']} and "
+               f"{results['shifted']['quality']['illicit operations present']} illicit "
+               "operations, and nearly every alert already holds an illicit wallet, so "
+               "precision@k saturates for both queues and small differences are within one "
+               "operation. What the actor queue changes is mostly the count: "
+               f"{results['standard']['quality']['alert count reduction']:.1%} and "
+               f"{results['shifted']['quality']['alert count reduction']:.1%} fewer items, at "
+               "the wrong-merge rates above. It is not shown to improve triage beyond that "
+               "on this data.\n")
+    return "".join(out)
+
+
+def demo_shift_section(cfg: dict) -> str:
+    """The served demo dataset against the corpus it is compared with."""
+    import json as _json
+    import math
+    from collections import Counter
+
+    from features import fingerprint as F
+    from graph.builder import iter_transactions, load
+    from origination import evaluate as OE
+    from origination.model import KEY, OriginationModel
+
+    out = ["\n### The served demo dataset is shifted from the corpora\n\n"]
+    gt = _json.loads((Path(cfg["ingest"]["input_dir"]) / "ground_truth.json").read_text())["transactions"]
+    matrix = pd.read_parquet(cfg["features"]["relay_path"])
+    model = OriginationModel.load(cfg["origination"]["model_path"])
+    keys = matrix[KEY].drop_duplicates().itertuples(index=False)
+    truth = pd.Series({(c, t): gt[t]["observed_origin_ip"] for c, t in keys if t in gt})
+    decided = OE.label_coinjoins(model.decide(matrix, truth, cfg),
+                                 {(c, t) for c, t in truth.index if gt[t]["pattern"] == "coinjoin"})
+    row = OE._row(OE.MODEL, decided, cfg, model.cutoff, "served demo capture")
+    cols = ["n", "top1", "abstention rate", "acc if answered", "ceiling (origin observed)",
+            "cost_weighted_score"]
+    out += [("The origination model on the served demo capture (a pooled collector over "
+            "the relay-hop log), scored as the corpus rows in section 9 are. Its "
+            "cross-topology corpus row: top1 0.274, abstention 0.808, accuracy if "
+            "answered 0.906, cost 0.120, ceiling 0.279. The demo's ceiling is far higher "
+            "because a pooled collector sees the origin far more often, so the absolute "
+            "numbers are not comparable; relative to its ceiling, top1 is "
+            f"{row['top1'] / row['ceiling (origin observed)']:.2f} here and "
+            f"{0.274 / 0.279:.2f} on the corpus. Origination does not degrade on the demo, "
+            "so the generators were not aligned for it.\n\n"),
+            md_table(pd.DataFrame([{k: row.get(k) for k in cols}])), "\n"]
+
+    fp = F.load_model(cfg)
+    worst = Counter()
+    for tx in iter_transactions(load(None, cfg)):
+        t = F.tells(F.View.of_tx(tx))
+        a = fp.classify(t, cfg)
+        if not a.get("novelty", {}).get("novel"):
+            continue
+        top = a["ranked"][0]["label"]
+
+        def surprise(tell, t=t, top=top):
+            v = t[tell]
+            k = len(fp.vocab[tell]) + (v not in fp.vocab[tell])
+            c = fp.counts.get(top, {}).get(tell, {}).get(v, 0)
+            return -math.log((c + fp.meta["alpha"]) / (fp.totals[top].get(tell, 0) + fp.meta["alpha"] * k))
+        tell = max((x for x in t if t[x] is not None and x in fp.vocab), key=surprise)
+        kind = "ordinary payment" if gt[tx.txid]["pattern"] == "normal" else "typology"
+        worst[(kind, tell)] += 1
+    out += [("\nWhat the fingerprint novelty check trips on in the demo, by the tell that "
+            "was least supported under the named pattern:\n\n"),
+            md_table(pd.DataFrame([{"transaction": k, "worst tell": t, "flagged": n}
+                                   for (k, t), n in worst.most_common()])),
+            ("\n`script_mix`: `generator.main` gives each actor a script type from "
+            "`generator.script_types`, independent of its wallet profile, while the corpus "
+            "draws input types from the profile's `input_types`. `io_shape`: the typologies "
+            "build 1-in-1-out and wide fan-out transactions the corpus's three shapes "
+            "(payment, batch, CoinJoin) never contain. Both are generator differences, not "
+            "model faults, and only the fingerprint depends on them.\n")]
+    return "".join(out)
 
 
 FINGERPRINT_OMISSIONS = (
@@ -1119,7 +1254,7 @@ WORSE = """**What got worse, and why.**
 
 
 CLOSING = """
-## 13. Decisions taken in this pass
+## 14. Decisions taken in this pass
 
 **The unit of detection is the actor.** Pre-registered in
 `docs/detection_unit_protocol.md` before the label was built or the stacker

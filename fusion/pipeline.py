@@ -272,13 +272,14 @@ def run(input_path=None, ground_truth=None, out_parquet=None, out_json=None,
         "alerts": json.loads(alerts.to_json(orient="records")),
     }
     js.write_text(json.dumps(payload, indent=2))
+    actors_path = write_actors(df, bundle, stacker, alerts, cfg, actors_path_for(js, cfg))
 
     # The analysis itself is an event in the case: which data went in, which
     # model scored it, and what came out. A reviewer reading the alert list a
     # year later can tell whether it was produced from the data they hold.
     entry = custody.record("analysis", {
         "files": [custody.seal(Path(input_path or cfg["ingest"]["output_path"])),
-                  custody.seal(parquet), custody.seal(js)],
+                  custody.seal(parquet), custody.seal(js), custody.seal(actors_path)],
         "entities": len(bundle["signals"]), "alerts": len(alerts),
         "alert_threshold": f["alert_threshold"],
         "stacker_fitted": bool(stacker.metrics.get("fitted", True)),
@@ -290,7 +291,30 @@ def run(input_path=None, ground_truth=None, out_parquet=None, out_json=None,
             "watchlist_seeds": len(bundle["seed_entities"]),
             "tainted": int((bundle["signals"]["taint_score"] > 0).sum()),
             "stacker": stacker.metrics, "degraded_mode": bundle["propagation"]["degraded"],
-            "parquet": str(parquet), "json": str(js)}
+            "parquet": str(parquet), "json": str(js), "actors": str(actors_path)}
+
+
+def actors_path_for(alerts_json: Path, cfg: dict) -> Path:
+    """Actors live beside the alerts they were built with: the configured path
+    for the configured alerts, else `<alerts>_actors.json` next to them."""
+    if Path(alerts_json).resolve() == Path(cfg["fusion"]["alerts_json"]).resolve():
+        return Path(cfg["fusion"]["actors_json"])
+    return Path(alerts_json).with_name(Path(alerts_json).stem + "_actors.json")
+
+
+def write_actors(df: pd.DataFrame, bundle: dict, stacker: Stacker, alerts: pd.DataFrame,
+                 cfg: dict, path: Path) -> Path:
+    """Actors over the same bundle and stacker as the alerts (fusion/actors.py)."""
+    from engines.correlation.profile import build_sources
+
+    from . import actors
+    src = build_sources(cfg, transactions=df, features=bundle["features"])
+    built = actors.build(bundle["signals"], stacker, actors.peer_links(src, cfg), cfg,
+                         set(alerts["entity_id"]))
+    path.write_text(json.dumps({"alert_threshold": cfg["fusion"]["alert_threshold"],
+                                "statement": actors.STATEMENT,
+                                "actors": json.loads(actors.to_json(built))}, indent=1))
+    return path
 
 
 def main(argv=None) -> None:

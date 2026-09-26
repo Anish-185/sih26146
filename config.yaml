@@ -411,6 +411,9 @@ fusion:
   # Saved investigation views (the graph the analyst actually built).
   investigations_dir: data/processed/investigations
   alerts_json: data/processed/final_alerts.json
+  # Actors (fusion/actors.py, docs/ACTORS.md): clusters joined to peer
+  # identities. Written beside the alerts by `python -m fusion.pipeline`.
+  actors_json: data/processed/final_actors.json
   model_path: models/stacker.joblib
   alert_threshold: 0.5        # composite score above which an alert is explained
   leads_per_entity: 3         # top-k IP attribution leads shown per alert
